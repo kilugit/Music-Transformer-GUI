@@ -42,8 +42,7 @@ pip install torch-directml
 pip install -r requirements.txt
 ```
 
-## PLAY:
-Launch GUI:
+## Launch GUI:
 ```
 run.bat (Windows)
 ```
