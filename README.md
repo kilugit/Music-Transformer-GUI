@@ -1,7 +1,7 @@
 ## What's new?
 
-I've optimized the source code to run on local hardwares, reducing VRAM consumption and increasing GPU acceleration.
-I've also added a graphical interface and one-click installation scripts.
+I've optimized the source code to run on internal hardware, reducing VRAM consumption and increasing GPU acceleration.
+I've added a graphical interface and one-click installation scripts.
 I've also revamped the folder management.
 Simply put, it's now easier to use and install.
 
