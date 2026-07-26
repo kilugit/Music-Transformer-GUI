@@ -1,3 +1,9 @@
+## What's new?
+
+I've optimized the source code to run on local hardwares, reducing VRAM consumption and increasing GPU acceleration.
+I've also added a graphical interface and one-click installation scripts.
+I've also revamped the folder management.
+Simply put, it's now easier to use and install.
 
 ## Setting up
 Clone, the git repository, cd into it if necessary, and install the requirements. Then you're ready to preprocess MIDI files, as well as train and generate music with a Music Transformer.
