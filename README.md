@@ -19,7 +19,7 @@ cd ./MIDI-Transformer-GUI
 ## Manual Installation:
 Create env:
 ```
-python3 -3.12 -m venv venv
+py -3.12 -m venv venv
 venv/Scripts/activate
 ```
 
