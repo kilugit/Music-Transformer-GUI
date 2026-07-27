@@ -13,7 +13,7 @@ Simply put, it's now easier to use and install.
 Clone, the git repository, cd into it if necessary, and install the requirements. Then you're ready to preprocess MIDI files, as well as train and generate music with a Music Transformer.
 ```shell
 git clone https://github.com/kilugit/Music-Transformer-GUI
-cd MIDI-Transformer-GUI
+cd Music-Transformer-GUI
 ```
 
 ## Manual Installation:
