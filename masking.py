@@ -28,29 +28,27 @@ def create_padding_mask(inp, n=4):
     return mask.view(*mask.shape[:-1], *[1 for _ in range(n-2)], mask.shape[-1]).to(inp.device)
 
 
-def _device_key(device):
-    """Normalize device to a cache-friendly string key."""
+def _resolve_device(device):
+    """Normalize device to a canonical torch.device for cache consistency."""
+    if isinstance(device, str):
+        device = torch.device(device)
     s = str(device)
     if s.startswith("privateuseone"):
-        return "directml"
-    return s
+        return torch.device("cpu")
+    return device
 
 
 @lru_cache(maxsize=8)
-def _cached_look_ahead_mask(seq_len, device_key, device='cpu'):
-    mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1).float()
+def _cached_look_ahead_mask(seq_len, device):
+    device = _resolve_device(device)
+    mask = torch.triu(torch.full((seq_len, seq_len), 1.0, device=device), diagonal=1)
     return mask
-
-
-def create_look_ahead_mask(seq_len, device='cpu'):
-    return _cached_look_ahead_mask(seq_len, _device_key(device), device=device)
 
 
 def create_mask(inp, n=4):
     padding_mask = create_padding_mask(inp, n=n)
-    la_mask = _cached_look_ahead_mask(inp.shape[-1], _device_key(inp.device), device=inp.device)
-    combined_mask = (padding_mask + la_mask).clamp(max=1)
-    return combined_mask.to(inp.device)
+    la_mask = _cached_look_ahead_mask(inp.shape[-1], inp.device)
+    return torch.maximum(padding_mask, la_mask)
 
 
 def create_cache_mask(inp, past_length, n=4):
@@ -72,7 +70,7 @@ def create_cache_mask(inp, past_length, n=4):
 
     padding_mask = create_padding_mask(inp, n=n)
 
-    look_ahead = _cached_look_ahead_mask(seq_len_q, _device_key(inp.device), device=inp.device)
+    look_ahead = _cached_look_ahead_mask(seq_len_q, inp.device)
     left_block = torch.zeros(seq_len_q, past_length, device=inp.device, dtype=look_ahead.dtype)
     full_look_ahead = torch.cat([left_block, look_ahead], dim=-1)
 
@@ -80,5 +78,4 @@ def create_cache_mask(inp, past_length, n=4):
     full_padding = torch.zeros(*batch_shape, 1, 1, total_len, device=inp.device)
     full_padding[..., past_length:] = padding_mask
 
-    combined = (full_padding + full_look_ahead).clamp(max=1)
-    return combined
+    return torch.maximum(full_padding, full_look_ahead)

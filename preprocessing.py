@@ -30,7 +30,7 @@ Functionality to preprocess MIDI files translated into indices in the event voca
 def sample_end_data(seqs, lth, factor=6):
     """
     Randomly samples sequences of length ~lth from an input set of sequences seqs. Prepares data for augmentation.
-    Returns a list. Deliberately samples from the end so that model learns to end.
+    Returns a list. Samples from the end of each sequence.
 
     Args:
         seqs (list): list of sequences in the event vocabulary
@@ -92,15 +92,9 @@ def aug(data, note_shifts=None, time_stretches=None, verbose=False):
     if any([i <= 0 for i in time_stretches]):
         raise ValueError("time_stretches must all be positive")
 
-    # preprocess the time stretches
+    time_stretches = _expand_time_stretches(time_stretches)
     if 1 not in time_stretches:
-        time_stretches.append(1)
-    ts = []
-    for t in time_stretches:
-        ts.append(t) if t not in ts else None
-        ts.append(1 / t) if (t != 1 and 1 / t not in ts) else None
-    ts.sort()
-    time_stretches = ts
+        time_stretches = [1.0] + time_stretches
 
     # convert shifts to plain ints once
     shift_vals = [s.item() if isinstance(s, torch.Tensor) else s for s in note_shifts]
@@ -145,18 +139,15 @@ def aug(data, note_shifts=None, time_stretches=None, verbose=False):
                 segments.append(seq[prev:])
 
             result = []
-            for i, seg in enumerate(segments):
-                if i % 2 == 0:
-                    # time-shift segment: stretch each individually to preserve granularity
-                    if len(seg) > 0:
-                        ts_times = (seg - note_events).float()
-                        for tt in ts_times:
-                            stretched = int(tt * DIV * time_stretch + 0.5)
-                            if stretched > 0:
-                                time_to_events(stretched, index_list=result)
+            for seg in segments:
+                if len(seg) > 0 and ts_lo <= seg[0].item() <= ts_hi:
+                    ts_times = (seg - note_events).float()
+                    for tt in ts_times:
+                        stretched = int(tt * DIV * time_stretch + 0.5)
+                        if stretched > 0:
+                            time_to_events(stretched, index_list=result)
                 else:
-                    # non-time-shift token
-                    result.append(seg[0].item())
+                    result.append(seg[0].item() if len(seg) > 0 else 0)
 
             time_stretched_data.append(torch.tensor(result, dtype=torch.long))
             count += 1
@@ -173,6 +164,16 @@ def aug(data, note_shifts=None, time_stretches=None, verbose=False):
     return aug_data
 
 
+def _expand_time_stretches(time_stretches):
+    """Expand time stretches to include reciprocal values, deduplicated and sorted."""
+    ts_set = set()
+    for t in time_stretches:
+        ts_set.add(t)
+        if t != 1:
+            ts_set.add(1 / t)
+    return sorted(ts_set)
+
+
 def randomly_sample_aug_data(aug_data, k, note_shifts=None, time_stretches=None):
     """
     Randomly samples k sets of augmented data to cut down dataset
@@ -187,14 +188,10 @@ def randomly_sample_aug_data(aug_data, k, note_shifts=None, time_stretches=None)
         note_shifts = torch.arange(-2, 3)
     if time_stretches is None:
         time_stretches = [1, 1.05, 1.1]
-    if 1 not in time_stretches:
-        time_stretches = [1] + time_stretches
-    ts_set = set()
-    for t in time_stretches:
-        ts_set.add(t)
-        if t != 1:
-            ts_set.add(1 / t)
-    augs = len(note_shifts) * len(ts_set)
+    ts_expanded = _expand_time_stretches(time_stretches)
+    if 1.0 not in ts_expanded:
+        ts_expanded = [1.0] + ts_expanded
+    augs = len(note_shifts) * len(ts_expanded)
     random_indices = sample(range(len(aug_data) // augs), k=k)
     out = torch.cat(
         [t[i * augs:i * augs + augs] for i in random_indices],
@@ -250,9 +247,14 @@ if __name__ == "__main__":
     # load parsed midi files
     if not args.from_augmented_data:
         files = list(glob.iglob(os.path.join(PATH, '**', '*.mid*'), recursive=True))
-        print(f"Translating {len(files)} midi files to event vocabulary (using {cpu_count()} workers)...") if args.verbose else None
-        with Pool(cpu_count()) as pool:
-            results = list(pool.imap_unordered(_parse_midi_file, files))
+        num_workers = min(cpu_count(), 4)
+        print(f"Translating {len(files)} midi files to event vocabulary (using {num_workers} workers)...") if args.verbose else None
+        try:
+            with Pool(num_workers) as pool:
+                results = list(pool.imap_unordered(_parse_midi_file, files))
+        except Exception:
+            print("Multiprocessing failed, falling back to sequential processing...") if args.verbose else None
+            results = [_parse_midi_file(f) for f in files]
         DATA = [r for r in results if r is not None]
         failed = len(files) - len(DATA)
         if failed:
@@ -274,12 +276,19 @@ if __name__ == "__main__":
     if not args.from_augmented_data and len(DATA) > 0:
         print("Augmenting data (NOTE: may take even longer)...") if args.verbose else None
         DATA = aug(DATA, note_shifts=args.transpositions, time_stretches=args.time_stretches,
-                   verbose=(args.verbose >= 2))
+                   verbose=args.verbose)
         print("Done!") if args.verbose else None
-    
+
     if len(DATA) == 0:
         print("Error: no data to process. Check your source directory.")
         exit(1)
+
+    # Ensure DATA is a 2D tensor (handle --from-augmented-data list case)
+    if isinstance(DATA, list):
+        print("Padding sequences from augmented data...") if args.verbose else None
+        DATA = [F.pad(F.pad(seq, (1, 0), value=start_token), (0, 1), value=end_token) for seq in DATA]
+        DATA = torch.nn.utils.rnn.pad_sequence(DATA, padding_value=pad_token).transpose(-1, -2)
+        print("Done!") if args.verbose else None
 
     # shuffle data
     DATA = DATA[torch.randperm(DATA.shape[0])]

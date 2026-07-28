@@ -33,13 +33,14 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList([copy.deepcopy(decoder_layer) for _ in range(num_layers)])
         self.norm = norm
 
-    def forward(self, tgt, memory=None, tgt_mask=None, past_key_values=None):
-        new_key_values = []
+    def forward(self, tgt, memory=None, tgt_mask=None, past_key_values=None, return_kv=True):
+        new_key_values = [] if return_kv else None
         for i, layer in enumerate(self.layers):
             pk = past_key_values[i][0] if past_key_values is not None else None
             pv = past_key_values[i][1] if past_key_values is not None else None
             tgt, k, v = layer(tgt, memory=memory, tgt_mask=tgt_mask, past_k=pk, past_v=pv)
-            new_key_values.append((k, v))
+            if return_kv:
+                new_key_values.append((k, v))
         if self.norm is not None:
             tgt = self.norm(tgt)
         return tgt, new_key_values
@@ -132,7 +133,7 @@ class MusicTransformer(nn.Module):
                             nn.init.normal_(param, mean=0.0, std=0.02)
         nn.init.normal_(self.final.weight, mean=0.0, std=0.02 / (2 * self.num_layers) ** 0.5)
 
-    def forward(self, x, mask=None, past_key_values=None):
+    def forward(self, x, mask=None, past_key_values=None, return_kv=True):
         """
         Forward pass through the Music Transformer.
 
@@ -140,9 +141,10 @@ class MusicTransformer(nn.Module):
             x (torch.Tensor): input batch of sequences of shape (batch_size, seq_len)
             mask (optional): mask for input batch indicating positions in x to mask with 1's. Default: None
             past_key_values (optional, list of (K, V) tuples): cached keys/values for each layer
+            return_kv (bool): if False, skip building KV cache (saves memory during training)
 
         Returns:
-            (logits, new_key_values) where new_key_values is the updated KV cache
+            (logits, new_key_values) where new_key_values is the updated KV cache (or None)
         """
         x = self.input_embedding(x)
         x *= sqrt(self.d_model)
@@ -155,7 +157,7 @@ class MusicTransformer(nn.Module):
 
         x = self.input_dropout(x)
 
-        x, new_key_values = self.decoder(x, memory=None, tgt_mask=mask, past_key_values=past_key_values)
+        x, new_key_values = self.decoder(x, memory=None, tgt_mask=mask, past_key_values=past_key_values, return_kv=return_kv)
 
         x = self.final(x)
 

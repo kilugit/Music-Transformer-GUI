@@ -115,21 +115,18 @@ def get_amp_context(enabled=True):
     if not enabled:
         return torch.cpu.amp.autocast(enabled=False)
     if device_type == "xpu":
-        return torch.amp.autocast(device_type="xpu", dtype=torch.float16)
+        return torch.amp.autocast(device_type="xpu", dtype=torch.bfloat16)
     if device_type in ("cuda", "rocm"):
-        return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+        return torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
     if device_type == "directml":
         return torch.amp.autocast(device_type="cpu", enabled=False)
     return torch.cpu.amp.autocast(enabled=False)
 
 
 def get_grad_scaler(enabled=True):
-    if not enabled or device_type in ("cpu", "directml"):
+    if not enabled:
         return None
-    if device_type == "xpu":
-        return torch.amp.GradScaler("xpu")
-    if device_type in ("cuda", "rocm"):
-        return torch.amp.GradScaler()
+    # bfloat16 doesn't need gradient scaling — same exponent range as float32
     return None
 
 
@@ -149,34 +146,4 @@ hparams = {
     "use_sdpa": True,
 }
 
-hparams_8gb = {
-    "d_model": 128,
-    "num_layers": 3,
-    "num_heads": 4,
-    "d_ff": 256,
-    "max_rel_dist": 512,
-    "max_abs_position": 0,
-    "vocab_size": vocab_size,
-    "bias": True,
-    "dropout": 0.1,
-    "layernorm_eps": 1e-6,
-    "use_swiglu": True,
-    "use_qk_norm": True,
-    "use_sdpa": True,
-}
 
-hparams_large = {
-    "d_model": 256,
-    "num_layers": 6,
-    "num_heads": 8,
-    "d_ff": 1024,
-    "max_rel_dist": 1024,
-    "max_abs_position": 0,
-    "vocab_size": vocab_size,
-    "bias": True,
-    "dropout": 0.1,
-    "layernorm_eps": 1e-6,
-    "use_swiglu": True,
-    "use_qk_norm": True,
-    "use_sdpa": True,
-}

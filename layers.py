@@ -165,6 +165,17 @@ class MultiHeadAttention(nn.Module):
         if max_len is None:
             max_len = self.E.num_embeddings
 
+        key = (seq_len, max_len)
+        if not hasattr(self, '_emb_cache'):
+            self._emb_cache = {}
+        if key in self._emb_cache:
+            indices, n_extra, last_idx = self._emb_cache[key]
+            result = self.E(indices)
+            if n_extra > 0:
+                last = self.E(torch.tensor(last_idx, device=self.E.weight.device)).unsqueeze(0)
+                result = torch.cat([result, last.expand(n_extra, -1)], dim=0)
+            return result
+
         E_dev = self.E.weight.device
         n_extra = max(seq_len - max_len, 0)
         start = max(max_len - seq_len, 0)
@@ -175,6 +186,7 @@ class MultiHeadAttention(nn.Module):
         if n_extra > 0:
             last = self.E(torch.tensor(max_len - 1, device=E_dev)).unsqueeze(0)
             result = torch.cat([result, last.expand(n_extra, -1)], dim=0)
+        self._emb_cache[key] = (indices, n_extra, max_len - 1)
         return result
 
     def forward(self, q, k, v, mask=None, past_k=None, past_v=None):

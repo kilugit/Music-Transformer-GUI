@@ -279,7 +279,7 @@ def list_parser(index_list=None, event_list=None, fname="bloop", tempo=DEFAULT_T
         # time shift event
         elif note_on_events + note_off_events <= idx < note_on_events + note_off_events + time_shift_events:
             # find cut time in range (1, time_shift_events)
-            cut_time = idx - (note_on_events + note_off_events - 1)
+            cut_time = idx - (note_on_events + note_off_events) + 1
             # each time shift represents DIV ms; convert ms to ticks at current tempo
             ms = cut_time * DIV / speed
             delta_ticks += _ms_to_ticks(ms, tempo, ticks_per_beat)

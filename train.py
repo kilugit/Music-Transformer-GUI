@@ -121,7 +121,7 @@ def loss_fn(prediction, target, label_smoothing=0.0):
 def train_step(model: MusicTransformer, opt, sched, inp, tar,
                scaler=None, accumulation_steps=1, micro_step=0,
                max_grad_norm=None, label_smoothing=0.0):
-    logits, _ = model(inp, mask=create_mask(inp))
+    logits = model(inp, mask=create_mask(inp), return_kv=False)[0]
     loss = loss_fn(logits.transpose(-1, -2), tar, label_smoothing=label_smoothing)
     loss = loss / accumulation_steps
 
@@ -148,8 +148,9 @@ def train_step(model: MusicTransformer, opt, sched, inp, tar,
 
 
 def val_step(model: MusicTransformer, inp, tar):
-    predictions, _ = model(inp, mask=create_mask(inp))
-    loss = loss_fn(predictions.transpose(-1, -2), tar)
+    with torch.no_grad():
+        predictions = model(inp, mask=create_mask(inp), return_kv=False)[0]
+        loss = loss_fn(predictions.transpose(-1, -2), tar)
     return float(loss)
 
 
@@ -176,7 +177,8 @@ class MusicTransformerTrainer:
                  ckpt_path="music_transformer_ckpt.pt", load_from_checkpoint=False,
                  use_amp=False, accumulation_steps=1,
                  lr_schedule="transformer", weight_decay=0.01, max_grad_norm=1.0,
-                 label_smoothing=0.05, use_ema=False, ema_decay=0.999, total_steps=100000):
+                 label_smoothing=0.05, use_ema=False, ema_decay=0.999, total_steps=100000,
+                 val_every_n_epochs=1):
         """
         Args:
             hparams_: hyperparameters of the model
@@ -205,10 +207,16 @@ class MusicTransformerTrainer:
             hparams_["max_abs_position"] = max(hparams_["max_abs_position"], data.shape[-1])
 
         # train / validation split: 80 / 20
-        train_len = round(data.shape[0] * 0.8)
+        n = data.shape[0]
+        train_len = max(1, round(n * 0.8))
+        if train_len == n:
+            train_len = n - 1
         train_data = data[:train_len]
         val_data = data[train_len:]
-        print(f"There are {data.shape[0]} samples in the data, {len(train_data)} training samples and {len(val_data)} "
+        if len(val_data) == 0:
+            raise ValueError(f"Dataset too small ({n} samples) for train/val split. "
+                             f"Need at least 2 samples, got {n}.")
+        print(f"There are {n} samples in the data, {len(train_data)} training samples and {len(val_data)} "
               "validation samples")
 
         # datasets and dataloaders: split data into first (n-1) and last (n-1) tokens
@@ -252,12 +260,16 @@ class MusicTransformerTrainer:
                 lambda x: transformer_lr_schedule(self.hparams['d_model'], x, self.warmup_steps)
             )
         self.scaler = get_grad_scaler(use_amp)
+        self.use_amp = use_amp
         self.accumulation_steps = accumulation_steps
 
         # EMA
         self.ema = None
         if use_ema:
             self.ema = ExponentialMovingAverage(self.model, decay=ema_decay)
+
+        # validation frequency
+        self.val_every_n_epochs = val_every_n_epochs
 
         # setup checkpointing / saving
         self.ckpt_path = ckpt_path
@@ -289,6 +301,7 @@ class MusicTransformerTrainer:
             "warmup_steps": self.warmup_steps,
             "hparams": self.hparams,
             "lr_schedule": self.lr_schedule,
+            "total_steps": self.total_steps,
             "max_grad_norm": self.max_grad_norm,
             "label_smoothing": self.label_smoothing,
         }
@@ -333,6 +346,7 @@ class MusicTransformerTrainer:
         # create and load load optimizer and scheduler
         self.warmup_steps = ckpt.get("warmup_steps", 4000)
         self.lr_schedule = ckpt.get("lr_schedule", "transformer")
+        self.total_steps = ckpt.get("total_steps", self.total_steps)
         self.max_grad_norm = ckpt.get("max_grad_norm", self.max_grad_norm)
         self.label_smoothing = ckpt.get("label_smoothing", self.label_smoothing)
 
@@ -381,18 +395,17 @@ class MusicTransformerTrainer:
         print(time.strftime("%Y-%m-%d %H:%M"))
         model = self.model
 
-        amp_ctx = get_amp_context(self.scaler is not None)
+        amp_ctx = get_amp_context(self.use_amp)
 
         try:
             for epoch in range(epochs):
                 train_epoch_losses = []
-                val_epoch_losses = []
 
                 model.train()
                 self.optimizer.zero_grad()
                 for micro_step, (train_inp, train_tar) in enumerate(self.train_dl):
-                    train_inp = train_inp.to(device)
-                    train_tar = train_tar.to(device)
+                    train_inp = train_inp.to(device, non_blocking=True)
+                    train_tar = train_tar.to(device, non_blocking=True)
                     with amp_ctx:
                         loss = train_step(model, self.optimizer, self.scheduler,
                                           train_inp, train_tar, self.scaler,
@@ -400,6 +413,13 @@ class MusicTransformerTrainer:
                                           max_grad_norm=self.max_grad_norm,
                                           label_smoothing=self.label_smoothing)
                     train_epoch_losses.append(loss)
+                    # NaN detection: halt and save checkpoint
+                    if math.isnan(loss) or math.isinf(loss):
+                        print(f"ERROR: NaN/Inf loss detected at step {micro_step}. "
+                              f"This may be caused by AMP float16 instability on your GPU. "
+                              f"Try disabling --use-amp or reducing the learning rate. "
+                              f"Saving checkpoint before exiting...")
+                        raise KeyboardInterrupt()
                 # Step any remaining gradients (last partial accumulation)
                 if (micro_step + 1) % self.accumulation_steps != 0:
                     if self.scaler is not None:
@@ -419,30 +439,34 @@ class MusicTransformerTrainer:
                 if self.ema is not None:
                     self.ema.update(model)
 
-                model.eval()
-                # Apply EMA for validation if enabled
-                if self.ema is not None:
-                    self.ema.apply(model)
-                for val_inp, val_tar in self.val_dl:
-                    val_inp = val_inp.to(device)
-                    val_tar = val_tar.to(device)
-                    loss = val_step(model, val_inp, val_tar)
-                    val_epoch_losses.append(loss)
-                if self.ema is not None:
-                    self.ema.restore(model)
-
-                # mean losses for the epoch
+                # mean training loss for the epoch
                 train_mean = sum(train_epoch_losses) / len(train_epoch_losses)
-                val_mean = sum(val_epoch_losses) / len(val_epoch_losses)
-
-                # store complete history of losses in member lists and relative history for this session in output lists
                 self.train_losses.append(train_mean)
                 train_losses.append(train_mean)
-                self.val_losses.append(val_mean)
-                val_losses.append(val_mean)
 
-                print(f"Epoch {epoch } Time taken {round(time.time() - start, 2)} seconds "
-                    f"Train Loss {train_losses[-1]} Val Loss {val_losses[-1]}")
+                # Validate every val_every_n_epochs
+                do_val = (epoch + 1) % self.val_every_n_epochs == 0 or epoch == epochs - 1
+                if do_val:
+                    val_epoch_losses = []
+                    model.eval()
+                    if self.ema is not None:
+                        self.ema.apply(model)
+                    for val_inp, val_tar in self.val_dl:
+                        val_inp = val_inp.to(device, non_blocking=True)
+                        val_tar = val_tar.to(device, non_blocking=True)
+                        loss = val_step(model, val_inp, val_tar)
+                        val_epoch_losses.append(loss)
+                    if self.ema is not None:
+                        self.ema.restore(model)
+                    val_mean = sum(val_epoch_losses) / len(val_epoch_losses)
+                    self.val_losses.append(val_mean)
+                    val_losses.append(val_mean)
+                    val_str = f"Val Loss {val_mean}"
+                else:
+                    val_str = "Val skipped"
+
+                print(f"Epoch {epoch} Time taken {round(time.time() - start, 2)} seconds "
+                    f"Train Loss {train_mean} {val_str}")
                 start = time.time()
 
         except KeyboardInterrupt:
@@ -511,7 +535,8 @@ if __name__ == "__main__":
     parser.add_argument("-vs", "--vocab-size",
                         help="vocabulary size; default: 416", type=check_positive)
     parser.add_argument("-nb", "--no-bias",
-                        help="disable bias in linear layers", action="store_false")
+                        help="disable bias in linear layers",
+                        action="store_true", default=False)
     parser.add_argument("-dr", "--dropout", help="dropout rate; default: 0.1")
     parser.add_argument("-le", "--layernorm-eps", help="layernorm epsilon; default: 1e-6")
 
@@ -536,6 +561,8 @@ if __name__ == "__main__":
     parser.add_argument("--ema-decay", help="EMA decay rate; default: 0.999", type=float, default=0.999)
     parser.add_argument("--total-steps", help="total training steps for cosine schedule; default: 100000",
                         type=int, default=100000)
+    parser.add_argument("--val-every-n-epochs", help="validate every N epochs; default: 1",
+                        type=check_positive, default=1)
 
     # Architecture upgrade toggles
     parser.add_argument("--no-swiglu", help="disable SwiGLU FFN (use ReLU instead)", action="store_true")
@@ -556,7 +583,7 @@ if __name__ == "__main__":
     hparams["max_rel_dist"] = args.max_rel_dist if args.max_rel_dist else hparams["max_rel_dist"]
     hparams["max_abs_position"] = args.max_abs_position if args.max_abs_position else hparams["max_abs_position"]
     hparams["vocab_size"] = args.vocab_size if args.vocab_size else hparams["vocab_size"]
-    hparams["bias"] = args.no_bias
+    hparams["bias"] = not args.no_bias
     hparams["dropout"] = args.dropout if args.dropout else hparams["dropout"]
     hparams["layernorm_eps"] = args.layernorm_eps if args.layernorm_eps else hparams["layernorm_eps"]
     hparams["use_swiglu"] = not args.no_swiglu
@@ -575,7 +602,8 @@ if __name__ == "__main__":
                                       label_smoothing=args.label_smoothing,
                                       use_ema=args.use_ema,
                                       ema_decay=args.ema_decay,
-                                      total_steps=args.total_steps)
+                                      total_steps=args.total_steps,
+                                      val_every_n_epochs=args.val_every_n_epochs)
     print()
 
     # train the model

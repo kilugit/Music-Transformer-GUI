@@ -24,7 +24,7 @@ from hparams import device, get_amp_context
 
 def load_model(filepath, compile=False):
     from model import MusicTransformer
-    from hparams import hparams, device
+    from hparams import hparams
 
     file = torch.load(filepath, map_location=device, weights_only=True)
     if "hparams" not in file:
@@ -344,18 +344,17 @@ def generate(model_, inp, num_segments, save_path="./bloop.mid", mode="categoric
         all_tokens.extend(new_tokens)
 
         if verbose:
-            total_ms = calculate_duration_ms(all_tokens)
-            print(f"  Segment {seg + 1}: +{len(new_tokens)} tokens, total {total_ms/1000:.1f}s")
+            print(f"  Segment {seg + 1}: +{len(new_tokens)} tokens")
 
-        window = tokens[-512:] if len(tokens) > 512 else tokens
+        window_size = max(1, model_.max_rel_dist // 2)
+        window = tokens[-window_size:] if len(tokens) > window_size else tokens
         current_prompt = indices_to_events(window)
         seg += 1
 
     all_tokens.append(end_token)
     end = time.time()
     if verbose:
-        total_ms = calculate_duration_ms(all_tokens)
-        print(f"Generated {len(all_tokens)} tokens across {seg} segments ({total_ms/1000:.1f}s total).")
+        print(f"Generated {len(all_tokens)} tokens across {seg} segments.")
         print(f"Time taken: {round(end - start, 2)} secs.")
 
     return audiate(token_ids=torch.tensor(all_tokens), save_path=save_path, tempo=tempo,

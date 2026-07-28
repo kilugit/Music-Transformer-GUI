@@ -114,6 +114,7 @@ class MusicTransformerGUI:
         self.main_paned.add(self.notebook, weight=3)
 
         self.current_process = None
+        self._cancel_requested = False
         self._msg_queue = queue.Queue()
 
         self._build_generate_tab()
@@ -635,8 +636,7 @@ class MusicTransformerGUI:
         if bw > 1:
             cmd.extend(["-bw", str(bw)])
         speed = self.speed_var.get()
-        if speed != 1.0:
-            cmd.extend(["--speed", str(speed)])
+        cmd.extend(["--speed", str(speed)])
         if self.compile_var.get():
             cmd.append("-c")
 
@@ -644,7 +644,11 @@ class MusicTransformerGUI:
         if prompt and os.path.isfile(prompt):
             cmd.extend(["-i", prompt])
 
-        self._run_cmd(cmd, self.gen_btn, self.gen_stop_btn)
+        try:
+            self._run_cmd(cmd)
+        finally:
+            self.root.after(0, lambda: self.gen_btn.configure(state="normal"))
+            self.root.after(0, lambda: self.gen_stop_btn.configure(state="disabled"))
 
 
     def _train(self):
@@ -674,9 +678,13 @@ class MusicTransformerGUI:
             str(seq_len),
         ]
 
-        exit_code = self._run_cmd(pre_cmd, None, self.train_stop_btn)
+        try:
+            exit_code = self._run_cmd(pre_cmd)
+        finally:
+            self.root.after(0, lambda: self.train_stop_btn.configure(state="disabled"))
+
         if exit_code != 0:
-            self._enable_btn(self.train_btn)
+            self.root.after(0, lambda: self.train_btn.configure(state="normal"))
             self.output_text("Preprocessing failed. Aborting.")
             return
 
@@ -741,10 +749,14 @@ class MusicTransformerGUI:
         if ed != 0.999:
             train_cmd.extend(["--ema-decay", str(ed)])
 
-        self._run_cmd(train_cmd, self.train_btn, self.train_stop_btn)
+        try:
+            self._run_cmd(train_cmd)
+        finally:
+            self.root.after(0, lambda: self.train_btn.configure(state="normal"))
+            self.root.after(0, lambda: self.train_stop_btn.configure(state="disabled"))
 
 
-    def _run_cmd(self, cmd, btn, stop_btn=None, output_fn=None):
+    def _run_cmd(self, cmd, output_fn=None):
         if output_fn is None:
             output_fn = self.output_text
         output_fn(f"Running: {' '.join(cmd)}")
@@ -756,9 +768,12 @@ class MusicTransformerGUI:
                                     text=True, encoding="utf-8", errors="replace", **kwargs)
             self.current_process = proc
             for line in proc.stdout:
-                output_fn(line.rstrip())
+                if line:
+                    output_fn(line.rstrip())
             proc.wait()
-            if proc.returncode == 0:
+            if self._cancel_requested:
+                output_fn("Cancelled by user.")
+            elif proc.returncode == 0:
                 output_fn("Completed successfully.")
             else:
                 output_fn(f"Process exited with code {proc.returncode}.")
@@ -768,29 +783,42 @@ class MusicTransformerGUI:
             return -1
         finally:
             self.current_process = None
-            if btn is not None:
-                self.root.after(0, lambda b=btn: b.configure(state="normal"))
-            if stop_btn is not None:
-                self.root.after(0, lambda b=stop_btn: b.configure(state="disabled"))
-
-    def _enable_btn(self, btn):
-        self.root.after(0, lambda: btn.configure(state="normal"))
+            self._cancel_requested = False
 
     def _stop_process(self):
-        if self.current_process is not None:
-            self.output_text("\n--- Stopping process ---")
+        if getattr(self, '_stopping', False):
+            return
+        self._stopping = True
+        threading.Thread(target=self._stop_process_impl, daemon=True).start()
+
+    def _stop_process_impl(self):
+        proc = self.current_process
+        if proc is None:
+            self._stopping = False
+            return
+        self._cancel_requested = True
+        self.output_text("\n--- Stopping process ---")
+        try:
+            if sys.platform == "win32":
+                try:
+                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                except OSError:
+                    proc.terminate()
+            else:
+                try:
+                    proc.send_signal(signal.SIGINT)
+                except OSError:
+                    proc.terminate()
             try:
-                if sys.platform == "win32":
-                    self.current_process.send_signal(signal.CTRL_BREAK_EVENT)
-                else:
-                    self.current_process.send_signal(signal.SIGINT)
-                self.current_process.wait(timeout=5000)
+                proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.output_text("Process did not stop in time, sending kill...")
-                self.current_process.kill()
-                self.current_process.wait()
-            except Exception as e:
-                self.output_text(f"Error stopping process: {e}")
+                proc.kill()
+                proc.wait()
+        except Exception as e:
+            self.output_text(f"Error stopping process: {e}")
+        finally:
+            self.root.after(0, lambda: setattr(self, '_stopping', False))
 
     def _copy_output(self):
         self.root.clipboard_clear()
