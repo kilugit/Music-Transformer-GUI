@@ -173,8 +173,8 @@ class MultiHeadAttention(nn.Module):
         indices = torch.arange(start, start + total_len, device=E_dev)
         result = self.E(indices)
         if n_extra > 0:
-            first = self.E(torch.tensor(0, device=E_dev)).unsqueeze(0)
-            result = torch.cat([first.expand(n_extra, -1), result], dim=0)
+            last = self.E(torch.tensor(max_len - 1, device=E_dev)).unsqueeze(0)
+            result = torch.cat([result, last.expand(n_extra, -1)], dim=0)
         return result
 
     def forward(self, q, k, v, mask=None, past_k=None, past_v=None):
