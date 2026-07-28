@@ -161,8 +161,8 @@ def midi_parser(fname=None, mid=None):
 
         # append velocity if note_on
         if t == "note_on":
-            event_list.append(vocab[note_on_events + note_off_events + time_shift_events + vel])
-            index_list.append(note_on_events + note_off_events + time_shift_events + vel)
+            event_list.append(vocab[note_on_events + note_off_events + time_shift_events + vel + 1])
+            index_list.append(note_on_events + note_off_events + time_shift_events + vel + 1)
         # append event and idx note events
         event_list.append(vocab[idx])
         index_list.append(idx)
