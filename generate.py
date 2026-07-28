@@ -26,7 +26,7 @@ def load_model(filepath, compile=False):
     from model import MusicTransformer
     from hparams import hparams, device
 
-    file = torch.load(filepath, map_location=device)
+    file = torch.load(filepath, map_location=device, weights_only=True)
     if "hparams" not in file:
         file["hparams"] = hparams.copy()
 
@@ -38,7 +38,11 @@ def load_model(filepath, compile=False):
 
     model = MusicTransformer(**ckpt_hparams).to(device)
     state_dict = file.get("state_dict", file.get("model_state_dict"))
-    model.load_state_dict(state_dict, strict=False)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        print(f"WARNING: missing keys in checkpoint: {missing}")
+    if unexpected:
+        print(f"WARNING: unexpected keys in checkpoint: {unexpected}")
 
     if compile:
         model = torch.compile(model)
@@ -127,9 +131,6 @@ def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
 
     amp_ctx = get_amp_context(use_amp)
 
-    time_shift_start = note_on_events + note_off_events + 1
-    time_shift_end = note_on_events + note_off_events + time_shift_events
-
     past_key_values = None
     cache_len = 0
     past_ids_window = [] if repetition_penalty is not None else None
@@ -139,8 +140,7 @@ def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
         nonlocal inp, past_ids_window, past_key_values, cache_len, tokens_since_reprocess
         max_rel = model.max_rel_dist
         prefix_len = max_rel // 4
-        suffix_len = max_rel - prefix_len
-        inp = torch.cat([inp[:, :prefix_len], inp[:, -suffix_len:]], dim=-1)
+        inp = torch.cat([inp[:, :prefix_len], inp[:, -(max_rel - prefix_len):]], dim=-1)
         if past_ids_window is not None:
             past_ids_window = inp[0].tolist()[-500:]
         past_key_values = None
@@ -192,8 +192,11 @@ def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
                 if prediction == end_token:
                     return inp.squeeze(0)
 
-    except (KeyboardInterrupt, RuntimeError):
-        pass
+    except RuntimeError as e:
+        print(f"ERROR during generation: {e}")
+        raise
+    except KeyboardInterrupt:
+        print("Generation interrupted.")
     return inp.squeeze(0)
 
 
@@ -266,8 +269,11 @@ def beam_search_decode(model, inp, beam_width=3, temperature=1.0,
             for seq, _, score in beams:
                 completed.append((seq, score))
 
-    except (KeyboardInterrupt, RuntimeError):
-        pass
+    except RuntimeError as e:
+        print(f"ERROR during beam search: {e}")
+        raise
+    except KeyboardInterrupt:
+        print("Beam search interrupted.")
 
     if not completed:
         return beams[0][0].squeeze(0) if beams else inp.squeeze(0)

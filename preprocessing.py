@@ -147,12 +147,13 @@ def aug(data, note_shifts=None, time_stretches=None, verbose=False):
             result = []
             for i, seg in enumerate(segments):
                 if i % 2 == 0:
-                    # time-shift segment: sum rounded stretched times
+                    # time-shift segment: stretch each individually to preserve granularity
                     if len(seg) > 0:
                         ts_times = (seg - note_events).float()
-                        delta_time = int(torch.floor(ts_times * DIV * time_stretch + 0.5).sum().item())
-                        if delta_time > 0:
-                            time_to_events(delta_time, index_list=result)
+                        for tt in ts_times:
+                            stretched = int(tt * DIV * time_stretch + 0.5)
+                            if stretched > 0:
+                                time_to_events(stretched, index_list=result)
                 else:
                     # non-time-shift token
                     result.append(seg[0].item())
@@ -260,7 +261,7 @@ if __name__ == "__main__":
     else:
         # when loading pre-augmented data, load the tensor directly
         print("Loading augmented data from file...") if args.verbose else None
-        DATA = torch.load(args.source)
+        DATA = torch.load(args.source, weights_only=True)
         print("Done!") if args.verbose else None
 
     # randomly sample endings

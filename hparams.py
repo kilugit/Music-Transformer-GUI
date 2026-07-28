@@ -119,16 +119,16 @@ def get_amp_context(enabled=True):
     if device_type in ("cuda", "rocm"):
         return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
     if device_type == "directml":
-        return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+        return torch.amp.autocast(device_type="cpu", enabled=False)
     return torch.cpu.amp.autocast(enabled=False)
 
 
 def get_grad_scaler(enabled=True):
-    if not enabled:
+    if not enabled or device_type in ("cpu", "directml"):
         return None
     if device_type == "xpu":
         return torch.amp.GradScaler("xpu")
-    if device_type in ("cuda", "rocm", "directml"):
+    if device_type in ("cuda", "rocm"):
         return torch.amp.GradScaler()
     return None
 

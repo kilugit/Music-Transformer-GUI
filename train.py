@@ -197,7 +197,7 @@ class MusicTransformerTrainer:
         # get the data
         self.datapath = datapath
         self.batch_size = batch_size
-        data = torch.load(datapath).long()  # kept on CPU to avoid filling VRAM
+        data = torch.load(datapath, weights_only=True).long()  # kept on CPU to avoid filling VRAM
 
         # max absolute position must be able to account for the largest sequence in the data
         if hparams_["max_abs_position"] > 0:
@@ -312,7 +312,7 @@ class MusicTransformerTrainer:
         if ckpt_path is not None:
             self.ckpt_path = ckpt_path
 
-        ckpt = torch.load(self.ckpt_path)
+        ckpt = torch.load(self.ckpt_path, weights_only=True)
 
         # ensure backward compatibility with old checkpoints
         ckpt_hparams = ckpt["hparams"]
@@ -323,8 +323,12 @@ class MusicTransformerTrainer:
         # create and load model
         self.model = MusicTransformer(**ckpt_hparams).to(device)
         self.hparams = ckpt_hparams
-        print("Loading the model...", end="")
-        print(self.model.load_state_dict(ckpt["model_state_dict"], strict=False))
+        print("Loading the model...")
+        missing, unexpected = self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
+        if missing:
+            print(f"WARNING: missing keys in checkpoint: {missing}")
+        if unexpected:
+            print(f"WARNING: unexpected keys in checkpoint: {unexpected}")
 
         # create and load load optimizer and scheduler
         self.warmup_steps = ckpt.get("warmup_steps", 4000)
@@ -396,7 +400,19 @@ class MusicTransformerTrainer:
                                           max_grad_norm=self.max_grad_norm,
                                           label_smoothing=self.label_smoothing)
                     train_epoch_losses.append(loss)
-                if self.scaler is not None:
+                # Step any remaining gradients (last partial accumulation)
+                if (micro_step + 1) % self.accumulation_steps != 0:
+                    if self.scaler is not None:
+                        if self.max_grad_norm is not None:
+                            self.scaler.unscale_(self.optimizer)
+                            nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        if self.max_grad_norm is not None:
+                            nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                        self.optimizer.step()
+                    self.scheduler.step()
                     self.optimizer.zero_grad()
 
                 # Update EMA after each epoch
