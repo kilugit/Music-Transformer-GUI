@@ -37,7 +37,8 @@ def load_model(filepath, compile=False):
             ckpt_hparams[key] = False
 
     model = MusicTransformer(**ckpt_hparams).to(device)
-    model.load_state_dict(file["state_dict"], strict=False)
+    state_dict = file.get("state_dict", file.get("model_state_dict"))
+    model.load_state_dict(state_dict, strict=False)
 
     if compile:
         model = torch.compile(model)
