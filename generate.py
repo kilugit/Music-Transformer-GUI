@@ -132,9 +132,10 @@ def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
     past_key_values = None
     cache_len = 0
     past_ids_window = [] if repetition_penalty is not None else None
+    tokens_since_reprocess = 0
 
     def _truncate_context():
-        nonlocal inp, past_ids_window, past_key_values, cache_len
+        nonlocal inp, past_ids_window, past_key_values, cache_len, tokens_since_reprocess
         max_rel = model.max_rel_dist
         prefix_len = max_rel // 4
         suffix_len = max_rel - prefix_len
@@ -143,32 +144,32 @@ def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
             past_ids_window = inp[0].tolist()[-500:]
         past_key_values = None
         cache_len = 0
+        tokens_since_reprocess = 0
 
     try:
         with torch.no_grad(), amp_ctx:
             for step in range(max_steps):
                 if (model.max_rel_dist > 0 and past_key_values is not None
-                        and cache_len >= model.max_rel_dist):
+                        and tokens_since_reprocess >= model.max_rel_dist):
                     _truncate_context()
 
                 if past_key_values is None:
+                    if (model.max_rel_dist > 0
+                            and inp.shape[-1] > model.max_rel_dist):
+                        _truncate_context()
                     logits, past_key_values = model(inp, mask=create_mask(inp, 4), past_key_values=None)
                     logits_last = logits[0, -1, :]
                     cache_len = inp.shape[-1]
+                    tokens_since_reprocess = 0
                     if past_ids_window is not None:
                         past_ids_window = inp[0].tolist()[-500:]
-                    if (model.max_rel_dist > 0 and past_key_values is not None
-                            and cache_len >= model.max_rel_dist):
-                        _truncate_context()
-                        logits, past_key_values = model(inp, mask=create_mask(inp, 4), past_key_values=None)
-                        logits_last = logits[0, -1, :]
-                        cache_len = inp.shape[-1]
                 else:
                     new_token = inp[:, -1:]
                     mask = create_cache_mask(new_token, cache_len, 4)
                     logits, past_key_values = model(new_token, mask=mask, past_key_values=past_key_values)
                     logits_last = logits[0, -1, :]
                     cache_len += 1
+                    tokens_since_reprocess += 1
 
                 prediction = sample_from_logits(
                     logits_last,
