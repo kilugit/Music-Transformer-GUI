@@ -248,6 +248,12 @@ class MusicTransformerGUI:
         self.speed_var = tk.DoubleVar(value=1.0)
         ttk.Entry(adv, textvariable=self.speed_var, width=12).grid(row=r, column=1, sticky="w", padx=5, pady=6)
 
+        ttk.Label(adv, text="Context Mode:").grid(row=r, column=2, sticky="w", padx=(15, 5), pady=6)
+        self.context_mode_var = tk.StringVar(value="truncate_middle")
+        ttk.Combobox(adv, textvariable=self.context_mode_var,
+                     values=["truncate_middle", "rolling_window"], width=14, state="readonly").grid(
+            row=r, column=3, sticky="w", padx=5, pady=6)
+
         r += 1
         self.compile_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(adv, text="Compile Model (torch.compile — experimental, may cause crashes)", variable=self.compile_var).grid(
@@ -637,6 +643,9 @@ class MusicTransformerGUI:
             cmd.extend(["-bw", str(bw)])
         speed = self.speed_var.get()
         cmd.extend(["--speed", str(speed)])
+        cm = self.context_mode_var.get()
+        if cm != "truncate_middle":
+            cmd.extend(["--context-mode", cm])
         if self.compile_var.get():
             cmd.append("-c")
 

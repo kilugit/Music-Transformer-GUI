@@ -106,7 +106,8 @@ def sample_from_logits(logits, mode="categorical", temperature=1.0, top_k=None, 
 
 
 def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
-                  use_amp=True, top_p=None, repetition_penalty=None, max_steps=50000):
+                  use_amp=True, top_p=None, repetition_penalty=None, max_steps=50000,
+                  context_mode="truncate_middle"):
     inp = events_to_indices(inp)
 
     if inp[0] != start_token:
@@ -139,8 +140,11 @@ def greedy_decode(model, inp, mode="categorical", temperature=1.0, k=None,
     def _truncate_context():
         nonlocal inp, past_ids_window, past_key_values, cache_len, tokens_since_reprocess
         max_rel = model.max_rel_dist
-        prefix_len = max_rel // 4
-        inp = torch.cat([inp[:, :prefix_len], inp[:, -(max_rel - prefix_len):]], dim=-1)
+        if context_mode == "rolling_window":
+            inp = inp[:, -max_rel:]
+        else:
+            prefix_len = max_rel // 4
+            inp = torch.cat([inp[:, :prefix_len], inp[:, -(max_rel - prefix_len):]], dim=-1)
         if past_ids_window is not None:
             past_ids_window = inp[0].tolist()[-500:]
         past_key_values = None
@@ -306,7 +310,8 @@ def audiate(token_ids, save_path="gneurshk.mid", tempo=DEFAULT_TEMPO,
 
 def generate(model_, inp, num_segments, save_path="./bloop.mid", mode="categorical", temperature=1.0, k=None,
              tempo=DEFAULT_TEMPO, ticks_per_beat=DEFAULT_TPB, verbose=False, use_amp=True,
-             top_p=None, repetition_penalty=None, beam_width=None, speed=1.0):
+             top_p=None, repetition_penalty=None, beam_width=None, speed=1.0,
+             context_mode="truncate_middle"):
     print("Generating...") if verbose else None
     start = time.time()
 
@@ -323,7 +328,8 @@ def generate(model_, inp, num_segments, save_path="./bloop.mid", mode="categoric
         else:
             token_ids = greedy_decode(model=model_, inp=current_prompt,
                                       mode=mode, temperature=temperature, k=k, use_amp=use_amp,
-                                      top_p=top_p, repetition_penalty=repetition_penalty)
+                                      top_p=top_p, repetition_penalty=repetition_penalty,
+                                      context_mode=context_mode)
 
         tokens = token_ids.tolist()
         if tokens and tokens[0] == start_token:
@@ -413,6 +419,10 @@ if __name__ == "__main__":
     parser.add_argument("--speed", help="playback speed multiplier (e.g., 2.0 = 2x faster); default: 1.0",
                         type=float, default=1.0)
     parser.add_argument("--no-amp", help="disable automatic mixed precision", action="store_true")
+    parser.add_argument("--context-mode", choices=["truncate_middle", "rolling_window"],
+                        default="truncate_middle",
+                        help="context truncation strategy when sequence exceeds max_rel_dist; "
+                             "'truncate_middle' keeps prefix + suffix, 'rolling_window' keeps only the tail")
 
     args = parser.parse_args()
 
@@ -437,4 +447,4 @@ if __name__ == "__main__":
     generate(model_=music_transformer, inp=midi_input, num_segments=args.num_segments, save_path=args.save_path,
              temperature=temperature_, mode=mode_, k=k_, top_p=p_, repetition_penalty=rp_,
              beam_width=bw_, tempo=tempo_, ticks_per_beat=tpb_, verbose=args.verbose,
-             use_amp=not args.no_amp, speed=args.speed)
+             use_amp=not args.no_amp, speed=args.speed, context_mode=args.context_mode)
